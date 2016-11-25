@@ -32,6 +32,6 @@ public class BootCompletedReceiver extends BroadcastReceiver {
                                   Settings.Secure.IMMERSIVE_MODE_CONFIRMATIONS,
                                   "org.cyanogenmod.dotcase");
 
-        new CoverObserver(context).init();
+        context.startService(new Intent(context, DotcaseService.class));
     }
 }

@@ -53,7 +53,6 @@ public class Dotcase extends Activity implements SensorEventListener
 {
     private static final String TAG = "Dotcase";
 
-    private static final String COVER_NODE = "/sys/android_touch/cover";
     private final IntentFilter mFilter = new IntentFilter();
     private GestureDetector mDetector;
     private PowerManager mPowerManager;
@@ -69,6 +68,7 @@ public class Dotcase extends Activity implements SensorEventListener
 
         mContext = this;
 
+        mFilter.addAction(DotcaseConstants.ACTION_COVER_CLOSED);
         mFilter.addAction(DotcaseConstants.ACTION_KILL_ACTIVITY);
         mContext.getApplicationContext().registerReceiver(receiver, mFilter);
 
@@ -95,6 +95,12 @@ public class Dotcase extends Activity implements SensorEventListener
         mSensorManager = (SensorManager) mContext.getSystemService(Context.SENSOR_SERVICE);
         mDetector = new GestureDetector(mContext, new DotcaseGestureListener());
         sStatus.stopRunning();
+    }
+
+    @Override
+    public void onStart() {
+        super.onStart();
+
         new Thread(new Service()).start();
     }
 
@@ -118,11 +124,23 @@ public class Dotcase extends Activity implements SensorEventListener
         mSensorManager.registerListener(this,
                 mSensorManager.getDefaultSensor(Sensor.TYPE_PROXIMITY),
                 SensorManager.SENSOR_DELAY_NORMAL);
+        boolean screenOn = mPowerManager.isInteractive();
+        // Starting up or comign back from screen off
+        // Ensure device is awake and redraw
+        if (!screenOn) {
+            mPowerManager.wakeUp(SystemClock.uptimeMillis(), "Cover Closed");
+        }
+        Log.d(TAG, "Cover closed, Time to do work");
+        Intent newIntent = new Intent();
+        newIntent.setAction(DotcaseConstants.ACTION_REDRAW);
+        mContext.sendBroadcast(newIntent);
     }
 
     @Override
     protected void onPause() {
         super.onPause();
+        mPowerManager.goToSleep(SystemClock.uptimeMillis());
+
         try {
             mSensorManager.unregisterListener(this);
         } catch (IllegalArgumentException e) {
@@ -153,20 +171,6 @@ public class Dotcase extends Activity implements SensorEventListener
 
                         if (!sStatus.isRunning()) {
                             return;
-                        }
-
-                        try {
-                            BufferedReader br = new BufferedReader(new FileReader(COVER_NODE));
-                            String value = br.readLine();
-                            br.close();
-
-                            if (value.equals("0")) {
-                                sStatus.stopRunning();
-                                finish();
-                                overridePendingTransition(0, 0);
-                            }
-                        } catch (IOException e) {
-                            Log.e(TAG, "Error reading cover device", e);
                         }
 
                         try {
@@ -209,7 +213,17 @@ public class Dotcase extends Activity implements SensorEventListener
 
         @Override
         public boolean onDoubleTap(MotionEvent event) {
-            mPowerManager.goToSleep(SystemClock.uptimeMillis());
+            //if screen on, screen off & "pause"
+            boolean screenOn = mPowerManager.isInteractive();
+            Log.d(TAG, "DT detected, screenon:" + screenOn );
+            if(screenOn) {
+                // Screen is on, trun it off and go to Sleep now
+                onPause();
+            }
+            else {
+                // screen was off, Resume
+                onResume();
+            }
             return true;
         }
 
@@ -261,7 +275,11 @@ public class Dotcase extends Activity implements SensorEventListener
                 sStatus.stopRunning();
                 finish();
                 overridePendingTransition(0, 0);
+                onDestroy();
+            } else if (intent.getAction().equals(DotcaseConstants.ACTION_COVER_CLOSED)) {
+                onResume();
             }
         }
     };
+
 }

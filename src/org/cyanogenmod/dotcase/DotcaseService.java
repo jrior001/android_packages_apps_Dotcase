@@ -24,6 +24,7 @@ import java.text.Normalizer;
 
 import android.app.Activity;
 import android.app.ActivityManager;
+import android.app.Service;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -31,92 +32,74 @@ import android.content.IntentFilter;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Handler;
+import android.os.IBinder;
 import android.os.Message;
 import android.os.PowerManager;
 import android.os.PowerManager.WakeLock;
 import android.os.SystemClock;
-import android.os.UEventObserver;
+import android.os.UserHandle;
 import android.provider.ContactsContract;
 import android.provider.Settings;
 import android.telephony.TelephonyManager;
 import android.util.Log;
 
-class CoverObserver extends UEventObserver {
-    private static final String COVER_UEVENT_MATCH = "DEVPATH=/devices/virtual/switch/cover";
+public class DotcaseService extends Service {
 
     private static final String TAG = "Dotcase";
 
-    private final Context mContext;
-    private final WakeLock mWakeLock;
+    private static final int COVER_STATE_CHANGED = 0;
+
+    private Context mContext;
+    private PowerManager.WakeLock mWakeLock;
     private final IntentFilter mFilter = new IntentFilter();
     private PowerManager mPowerManager;
 
+    private final Object mLock = new Object();
+
     private int mSwitchState = 0;
 
-    public CoverObserver(Context context) {
-        mContext = context;
-        PowerManager pm = (PowerManager)context.getSystemService(Context.POWER_SERVICE);
-        mWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CoverObserver");
-        mWakeLock.setReferenceCounted(false);
-    }
 
-    public synchronized final void init() {
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        Log.d(TAG, "Creating service");
+        mContext = this;
+
         mFilter.addAction(Intent.ACTION_SCREEN_ON);
         mFilter.addAction(TelephonyManager.ACTION_PHONE_STATE_CHANGED);
         mFilter.addAction("com.android.deskclock.ALARM_ALERT");
+        mFilter.addAction(cyanogenmod.content.Intent.ACTION_COVER_CHANGE);
         // add other alarm apps here
 
+        mContext.getApplicationContext().registerReceiver(receiver, mFilter);
         mPowerManager = (PowerManager) mContext.getSystemService(Context.POWER_SERVICE);
-        startObserving(COVER_UEVENT_MATCH);
+        mWakeLock = mPowerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, TAG);
+
     }
 
-    @Override
-    public void onUEvent(UEventObserver.UEvent event) {
-        try {
-            mSwitchState = Integer.parseInt(event.get("SWITCH_STATE"));
-            boolean screenOn = mPowerManager.isScreenOn();
-            Dotcase.sStatus.setOnTop(false);
 
-            if (mSwitchState == 1) {
-                if (screenOn) {
-                    mPowerManager.goToSleep(SystemClock.uptimeMillis());
-                }
-            } else {
-                killActivity();
-                if (!screenOn) {
-                    mPowerManager.wakeUp(SystemClock.uptimeMillis());
-                }
-            }
-
-            mWakeLock.acquire();
-            mHandler.sendMessageDelayed(mHandler.obtainMessage(mSwitchState), 0);
-        } catch (NumberFormatException e) {
-            Log.e(TAG, "Error parsing SWITCH_STATE event", e);
-        }
-    }
-
-    private final Handler mHandler = new Handler() {
+    private final Handler mHandler = new Handler(true) {
         @Override
         public void handleMessage(Message msg) {
-            if (msg.what == 1) {
-                mContext.getApplicationContext().registerReceiver(receiver, mFilter);
-            } else {
-                try {
-                    mContext.getApplicationContext().unregisterReceiver(receiver);
-                } catch (IllegalArgumentException e) {
-                    Log.e(TAG, "Failed to unregister receiver", e);
-                }
+
+            switch (msg.what) {
+                case COVER_STATE_CHANGED:
+                    handleCoverChange(msg.arg1);
+                    mWakeLock.release();
+                    break;
             }
-            mWakeLock.release();
         }
     };
 
     private final BroadcastReceiver receiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            // If the case is open, don't try to do any of this
-            if (mSwitchState == 0) {
-                return;
+
+            if (intent.getAction().equals(cyanogenmod.content.Intent.ACTION_COVER_CHANGE))  {
+                int mLidState = intent.getIntExtra(cyanogenmod.content.Intent.EXTRA_COVER_STATE, -1);
+                if (mLidState != -1) { // ignore LID_ABSENT case
+                    onCoverEvent(mLidState);
+                }
             }
             Intent i = new Intent();
             if (intent.getAction().equals(TelephonyManager.ACTION_PHONE_STATE_CHANGED)) {
@@ -171,6 +154,34 @@ class CoverObserver extends UEventObserver {
         }
     };
 
+    private void handleCoverChange(int state) {
+        synchronized (mLock) {
+
+            if(state == 0) {
+                Log.e(TAG, "Cover Closed, Creating Dotcase Activity");
+                Intent intent = new Intent(this, Dotcase.class);
+                intent.setAction(DotcaseConstants.ACTION_COVER_CLOSED);
+                intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                intent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                startActivity(intent);
+            } else {
+                Log.e(TAG, "Cover Opened, Killing Dotcase Activity");
+                Intent intent = new Intent(DotcaseConstants.ACTION_KILL_ACTIVITY);
+                mContext.sendBroadcastAsUser(intent, new UserHandle(UserHandle.USER_CURRENT));
+            }
+        }
+    }
+
+    private void onCoverEvent(int state) {
+
+        Message message = new Message();
+        message.what = COVER_STATE_CHANGED;
+        message.arg1 = state;
+
+        mWakeLock.acquire();
+        mHandler.sendMessage(message);
+    }
+
     /**
      * Normalizes a string to lowercase without diacritics
      */
@@ -183,16 +194,6 @@ class CoverObserver extends UEventObserver {
                 .replaceAll("þ", "th")
                 .replaceAll("ß", "ss")
                 .replaceAll("œ", "oe");
-    }
-
-    public void killActivity() {
-        Dotcase.sStatus.stopRinging();
-        Dotcase.sStatus.stopAlarm();
-        Dotcase.sStatus.setOnTop(false);
-
-        Intent i = new Intent();
-        i.setAction(DotcaseConstants.ACTION_KILL_ACTIVITY);
-        mContext.sendBroadcast(i);
     }
 
     private class ensureTopActivity implements Runnable {
@@ -219,5 +220,9 @@ class CoverObserver extends UEventObserver {
                 }
             }
         }
+    }
+
+    public IBinder onBind(Intent intent) {
+        return null;
     }
 }

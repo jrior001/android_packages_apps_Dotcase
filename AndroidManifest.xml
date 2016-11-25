@@ -18,9 +18,9 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </receiver>
-        <service android:name="CoverObserver" android:permission="CoverObserver">
+        <service android:name="DotcaseService" android:permission="DotcaseService">
             <intent-filter>
-                <action android:name="CoverObserver"/>
+                <action android:name="org.cyanogenmod.intent.COVER_CHANGE"/>
             </intent-filter>
         </service>
         <activity
@@ -32,6 +32,8 @@
                   android:theme="@style/DotcaseTheme"
                   android:windowAnimationStyle="@null">
             <intent-filter>
+                <action android:name="org.cyanogenmod.dotcase.COVER_CLOSED" />
+                <action android:name="org.cyanogenmod.dotcase.KILL_ACTIVITY" />
                 <action android:name="android.intent.action.MAIN" />
             </intent-filter>
         </activity>
